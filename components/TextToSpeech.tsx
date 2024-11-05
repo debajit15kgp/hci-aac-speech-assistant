@@ -1,87 +1,215 @@
 'use client'
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Volume2, StopCircle, AlertTriangle } from "lucide-react"
+import { Volume2, StopCircle, AlertTriangle, Play } from "lucide-react"
+
+class AACPredictor {
+  constructor(wpm: number) {
+    this.wpm = wpm;
+    this.secondsPerWord = 60 / wpm;
+    this.speakingRate = 150;
+    this.secondsPerSpokenWord = 60 / this.speakingRate;
+    this.lastSpokenIndex = -1; // Track the last spoken word index
+  }
+
+  wpm: number;
+  secondsPerWord: number;
+  speakingRate: number;
+  secondsPerSpokenWord: number;
+  lastSpokenIndex: number;
+
+  static countCompletedWords(text: string): number {
+    const matches = text.match(/\S+[\s.,!?;:]+/g);
+    return matches ? matches.length : 0;
+  }
+
+  getCompletedWordsArray(text: string): string[] {
+    const matches = text.match(/\S+[\s.,!?;:]+/g);
+    return matches || [];
+  }
+
+  getNewCompletedWords(text: string): string | null {
+    const completedWords = this.getCompletedWordsArray(text);
+    if (completedWords.length <= this.lastSpokenIndex + 1) return null;
+
+    // Get all new completed words since last spoken
+    const newWords = completedWords.slice(this.lastSpokenIndex + 1);
+    this.lastSpokenIndex = completedWords.length - 1;
+    
+    // Join the words together preserving their original spacing and punctuation
+    return newWords.join('');
+  }
+
+  shouldStartSpeaking(wordsTyped: number, totalWords: number, currentTime: number): boolean {
+    const remainingWords = totalWords - wordsTyped;
+    const timeToFinishTyping = remainingWords * this.secondsPerWord;
+    const speakingTime = wordsTyped * this.secondsPerSpokenWord;
+    
+    const typingEndTime = currentTime + timeToFinishTyping;
+    const speakingEndTime = currentTime + speakingTime;
+    
+    const timeDifference = typingEndTime - speakingEndTime;
+    return Math.abs(timeDifference) <= 0.5;
+  }
+
+  reset(): void {
+    this.lastSpokenIndex = -1;
+  }
+}
 
 const TextToSpeech = () => {
   const [text, setText] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [voices, setVoices] = useState([]);
-  const [selectedVoice, setSelectedVoice] = useState('');
+  const [selectedVoice, setSelectedVoice] = useState('en-US-Standard-A');
   const [rate, setRate] = useState(1);
-  const [pitch, setPitch] = useState(1);
-  const [isSupported, setIsSupported] = useState(true);
-  const synthesis = window.speechSynthesis;
+  const [pitch, setPitch] = useState(0);
+  const [totalWords, setTotalWords] = useState(0);
+  const [wpm, setWpm] = useState(30);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [predictiveStarted, setPredictiveStarted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+  const predictor = useRef(new AACPredictor(wpm));
+  const audioQueue = useRef<HTMLAudioElement[]>([]);
+  const isPlaying = useRef(false);
 
-  // Check browser support and load voices
-  useEffect(() => {
-    if (!window.speechSynthesis) {
-      setIsSupported(false);
+  const voices = [
+    { name: 'en-US-Standard-A', language: 'en-US' },
+    { name: 'en-US-Standard-B', language: 'en-US' },
+    { name: 'en-US-Standard-C', language: 'en-US' },
+    { name: 'en-US-Standard-D', language: 'en-US' },
+    { name: 'en-US-Standard-E', language: 'en-US' },
+    { name: 'en-US-Standard-F', language: 'en-US' },
+  ];
+
+  const playNextInQueue = async () => {
+    if (audioQueue.current.length === 0) {
+      isPlaying.current = false;
+      setIsSpeaking(false);
       return;
     }
 
-    const loadVoices = () => {
-      const availableVoices = synthesis.getVoices();
-      setVoices(availableVoices);
-      if (availableVoices.length > 0) {
-        setSelectedVoice(availableVoices[0].name);
-      }
-    };
+    isPlaying.current = true;
+    setIsSpeaking(true);
+    
+    const audio = audioQueue.current.shift();
+    if (!audio) return;
 
-    loadVoices();
-    // Chrome requires this additional event listener
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-      speechSynthesis.onvoiceschanged = loadVoices;
+    try {
+      await audio.play();
+      await new Promise(resolve => {
+        audio.onended = resolve;
+      });
+    } catch (err) {
+      console.error('Audio playback error:', err);
     }
 
-    // Cleanup on unmount
-    return () => {
-      if (synthesis) {
-        synthesis.cancel();
+    playNextInQueue();
+  };
+
+  const queueForSpeaking = async (text: string) => {
+    if (!text?.trim()) return;
+
+    try {
+      const response = await fetch('/api/text-to-speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text,
+          voice: selectedVoice,
+          pitch,
+          speakingRate: rate,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate speech');
       }
-    };
-  }, []);
 
-  const handleSpeak = () => {
-    if (text.trim() === '') return;
+      const audioData = await response.blob();
+      const audio = new Audio(URL.createObjectURL(audioData));
+      
+      audio.onerror = (e) => {
+        console.error('Audio loading error:', e);
+        setError('Failed to load audio');
+      };
 
-    // Stop any ongoing speech
-    synthesis.cancel();
+      audioQueue.current.push(audio);
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.voice = voices.find(voice => voice.name === selectedVoice);
-    utterance.rate = rate;
-    utterance.pitch = pitch;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = (event) => {
-      console.error('Speech synthesis error:', event);
-      setIsSpeaking(false);
-    };
-
-    synthesis.speak(utterance);
+      if (!isPlaying.current) {
+        playNextInQueue();
+      }
+    } catch (err) {
+      console.error('Speech generation error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to generate speech');
+    }
   };
 
   const handleStop = () => {
-    synthesis.cancel();
+    audioQueue.current = [];
+    isPlaying.current = false;
     setIsSpeaking(false);
   };
+  
+  const handleStartPredicting = () => {
+    setText('');
+    setIsPredicting(true);
+    setPredictiveStarted(false);
+    startTimeRef.current = Date.now() / 1000;
+    predictor.current = new AACPredictor(wpm);
+    predictor.current.reset();
+    handleStop();
+  };
 
-  if (!isSupported) {
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+    setText(newText);
+    
+    if (!isPredicting || !startTimeRef.current) return;
+
+    const completedWords = AACPredictor.countCompletedWords(newText);
+    const currentTime = (Date.now() / 1000) - startTimeRef.current;
+
+    if (!predictiveStarted && completedWords > 0) {
+      const shouldSpeak = predictor.current.shouldStartSpeaking(
+        completedWords,
+        totalWords,
+        currentTime
+      );
+
+      if (shouldSpeak) {
+        setPredictiveStarted(true);
+      }
+    }
+
+    // If we've started predictive speaking, check for completed words
+    if (predictiveStarted) {
+      const newWords = predictor.current.getNewCompletedWords(newText);
+      if (newWords) {
+        queueForSpeaking(newWords);
+      }
+    }
+
+    if (completedWords === totalWords) {
+      setIsPredicting(false);
+    }
+  };
+
+  if (error) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
         <Alert variant="destructive" className="max-w-md">
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Browser Not Supported</AlertTitle>
-          <AlertDescription>
-            Your browser doesn't support the Web Speech API. Please try using a modern browser like Chrome, Firefox, or Edge.
-          </AlertDescription>
+          <AlertTitle>Error</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
         </Alert>
       </div>
     );
@@ -91,16 +219,59 @@ const TextToSpeech = () => {
     <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Text to Speech</CardTitle>
-          <CardDescription>
-            Customize and convert your text to speech
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Predictive Text to Speech</CardTitle>
+              <CardDescription>
+                Type naturally while speech begins at the optimal moment
+              </CardDescription>
+            </div>
+            {isPredicting && (
+              <span className={`px-2 py-1 rounded-full text-sm ${
+                isSpeaking ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'
+              }`}>
+                {isSpeaking ? "Speaking" : "Waiting"}
+              </span>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!isPredicting && (
+            <div className="flex items-center space-x-4 mb-4">
+              <input
+                type="number"
+                placeholder="Total words"
+                value={totalWords || ''}
+                onChange={(e) => setTotalWords(parseInt(e.target.value) || 0)}
+                className="w-32 px-3 py-2 border rounded-md"
+              />
+              <input
+                type="number"
+                placeholder="WPM"
+                value={wpm}
+                onChange={(e) => setWpm(parseInt(e.target.value) || 30)}
+                className="w-32 px-3 py-2 border rounded-md"
+              />
+              <Button
+                onClick={handleStartPredicting}
+                disabled={totalWords <= 0}
+              >
+                <Play className="mr-2 h-4 w-4" />
+                Start
+              </Button>
+            </div>
+          )}
+
+          {isPredicting && (
+            <div className="text-sm text-gray-500 mb-2">
+              Words: {AACPredictor.countCompletedWords(text)} / {totalWords}
+            </div>
+          )}
+
           <Textarea
-            placeholder="Enter text to convert to speech..."
+            placeholder={isPredicting ? "Start typing..." : "Enter text or set up predictive typing..."}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={handleTextChange}
             className="min-h-32 transition-all duration-200 focus:shadow-lg"
           />
           
@@ -114,7 +285,7 @@ const TextToSpeech = () => {
                 <SelectContent>
                   {voices.map((voice) => (
                     <SelectItem key={voice.name} value={voice.name}>
-                      {voice.name} ({voice.lang})
+                      {voice.name} ({voice.language})
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -137,32 +308,34 @@ const TextToSpeech = () => {
               <Slider
                 value={[pitch]}
                 onValueChange={([newPitch]) => setPitch(newPitch)}
-                min={0.5}
-                max={2}
-                step={0.1}
+                min={-10}
+                max={10}
+                step={1}
               />
             </div>
 
-            <div className="flex gap-2">
-              <Button
-                onClick={handleSpeak}
-                disabled={isSpeaking || !text.trim()}
-                className="w-full"
-              >
-                <Volume2 className="mr-2 h-4 w-4" />
-                Speak
-              </Button>
-              {isSpeaking && (
+            {!isPredicting && (
+              <div className="flex gap-2">
                 <Button
-                  onClick={handleStop}
-                  variant="destructive"
+                  onClick={() => queueForSpeaking(text)}
+                  disabled={isSpeaking || !text.trim()}
                   className="w-full"
                 >
-                  <StopCircle className="mr-2 h-4 w-4" />
-                  Stop
+                  <Volume2 className="mr-2 h-4 w-4" />
+                  Speak
                 </Button>
-              )}
-            </div>
+                {isSpeaking && (
+                  <Button
+                    onClick={handleStop}
+                    variant="destructive"
+                    className="w-full"
+                  >
+                    <StopCircle className="mr-2 h-4 w-4" />
+                    Stop
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
