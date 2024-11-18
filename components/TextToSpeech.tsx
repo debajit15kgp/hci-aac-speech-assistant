@@ -8,60 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Volume2, StopCircle, AlertTriangle, Play } from "lucide-react"
-
-// class AACPredictor {
-//   constructor(wpm: number) {
-//     this.wpm = wpm;
-//     this.secondsPerWord = 60 / wpm;
-//     this.speakingRate = 150;
-//     this.secondsPerSpokenWord = 60 / this.speakingRate;
-//     this.lastSpokenIndex = -1; // Track the last spoken word index
-//   }
-
-//   wpm: number;
-//   secondsPerWord: number;
-//   speakingRate: number;
-//   secondsPerSpokenWord: number;
-//   lastSpokenIndex: number;
-
-//   static countCompletedWords(text: string): number {
-//     const matches = text.match(/\S+[\s.,!?;:]+/g);
-//     return matches ? matches.length : 0;
-//   }
-
-//   getCompletedWordsArray(text: string): string[] {
-//     const matches = text.match(/\S+[\s.,!?;:]+/g);
-//     return matches || [];
-//   }
-
-//   getNewCompletedWords(text: string): string | null {
-//     const completedWords = this.getCompletedWordsArray(text);
-//     if (completedWords.length <= this.lastSpokenIndex + 1) return null;
-
-//     // Get all new completed words since last spoken
-//     const newWords = completedWords.slice(this.lastSpokenIndex + 1);
-//     this.lastSpokenIndex = completedWords.length - 1;
-    
-//     // Join the words together preserving their original spacing and punctuation
-//     return newWords.join('');
-//   }
-
-//   shouldStartSpeaking(wordsTyped: number, totalWords: number, currentTime: number): boolean {
-//     const remainingWords = totalWords - wordsTyped;
-//     const timeToFinishTyping = remainingWords * this.secondsPerWord;
-//     const speakingTime = wordsTyped * this.secondsPerSpokenWord;
-    
-//     const typingEndTime = currentTime + timeToFinishTyping;
-//     const speakingEndTime = currentTime + speakingTime;
-    
-//     const timeDifference = typingEndTime - speakingEndTime;
-//     return Math.abs(timeDifference) <= 0.5;
-//   }
-
-//   reset(): void {
-//     this.lastSpokenIndex = -1;
-//   }
-// }
+import AutocompleteInput from './autocomplete';
 
 class AACPredictor {
   constructor(wpm: number) {
@@ -196,46 +143,7 @@ const TextToSpeech = () => {
       setError(err instanceof Error ? err.message : 'Failed to generate speech');
     }
   };
-  // const queueForSpeaking = async (text: string) => {
-  //   if (!text?.trim()) return;
-  //   console.log('Queuing for speaking:', text);
-  
-  //   try {
-  //     const response = await fetch('/api/text-to-speech', {
-  //       method: 'POST',
-  //       headers: {
-  //         'Content-Type': 'application/json',
-  //       },
-  //       body: JSON.stringify({
-  //         text: text.trim(), // Remove any trailing spaces
-  //         voice: selectedVoice,
-  //         pitch,
-  //         speakingRate: rate,
-  //       }),
-  //     });
-  
-  //     if (!response.ok) {
-  //       throw new Error('Failed to generate speech');
-  //     }
-  
-  //     const audioData = await response.blob();
-  //     const audio = new Audio(URL.createObjectURL(audioData));
-      
-  //     audio.onerror = (e) => {
-  //       console.error('Audio loading error:', e);
-  //       setError('Failed to load audio');
-  //     };
-  
-  //     audioQueue.current.push(audio);
-  
-  //     if (!isPlaying.current) {
-  //       playNextInQueue();
-  //     }
-  //   } catch (err) {
-  //     console.error('Speech generation error:', err);
-  //     setError(err instanceof Error ? err.message : 'Failed to generate speech');
-  //   }
-  // };
+
 
   const handleStop = () => {
     audioQueue.current = [];
@@ -253,39 +161,6 @@ const TextToSpeech = () => {
     console.log('Started predicting mode. Target words:', totalWords);
   };
 
-  // const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-  //   const newText = e.target.value;
-  //   setText(newText);
-    
-  //   if (!isPredicting || !startTimeRef.current) return;
-
-  //   const completedWords = AACPredictor.countCompletedWords(newText);
-  //   const currentTime = (Date.now() / 1000) - startTimeRef.current;
-
-  //   if (!predictiveStarted && completedWords > 0) {
-  //     const shouldSpeak = predictor.current.shouldStartSpeaking(
-  //       completedWords,
-  //       totalWords,
-  //       currentTime
-  //     );
-
-  //     if (shouldSpeak) {
-  //       setPredictiveStarted(true);
-  //     }
-  //   }
-
-  //   // If we've started predictive speaking, check for completed words
-  //   if (predictiveStarted) {
-  //     const newWords = predictor.current.getNewCompletedWords(newText);
-  //     if (newWords) {
-  //       queueForSpeaking(newWords);
-  //     }
-  //   }
-
-  //   if (completedWords === totalWords) {
-  //     setIsPredicting(false);
-  //   }
-  // };
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     setText(newText);
@@ -335,14 +210,14 @@ const TextToSpeech = () => {
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        </Alert> 
       </div>
     );
   }
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
-      <Card className="w-full max-w-md">
+      <Card className="w-full min-w-[500px] max-w-4xl">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -393,13 +268,29 @@ const TextToSpeech = () => {
             </div>
           )}
 
-          <Textarea
-            placeholder={isPredicting ? "Start typing..." : "Enter text or set up predictive typing..."}
+          <AutocompleteInput
             value={text}
             onChange={handleTextChange}
+            placeholder={isPredicting ? "Start typing..." : "Enter text or set up predictive typing..."}
             className="min-h-32 transition-all duration-200 focus:shadow-lg"
+            onWordComplete={(word) => {
+              if (isPredicting && predictiveStarted) {
+                queueForSpeaking(word);
+              }
+            }}
+            totalWords={totalWords}
           />
-          
+
+          {/* <AutocompleteInput
+            value={text}
+            onChange={handleChange}
+            placeholder="Type something..."
+            className="w-full"
+            totalWords={10}
+            onWordComplete={(word) => console.log('Completed word:', word)}
+          /> */}
+
+
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Voice</label>
