@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback  } from 'react';
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
@@ -13,26 +13,30 @@ import { ConversationAnalyzer } from '@/lib/metrics/ConversationMetrics';
 import MetricsDashboard from '@/components/MetricsDashboard';
 
 class AACPredictor {
-  constructor(wpm: number) {
-    this.wpm = wpm;
-    this.secondsPerWord = 60 / wpm;
+  constructor() {
     this.speakingRate = 150;
     this.secondsPerSpokenWord = 60 / this.speakingRate;
     this.lastSpokenIndex = -1;
+    this.typingStartTime = Date.now();
+    this.wordTimestamps = [];
+    this.audioCache = new Map();
   }
 
-  wpm: number;
-  secondsPerWord: number;
   speakingRate: number;
   secondsPerSpokenWord: number;
   lastSpokenIndex: number;
+  typingStartTime: number;
+  wordTimestamps: number[];
+  audioCache: Map<string, number>;
 
   static countCompletedWords(text: string): number {
-    return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+    const matches = text.match(/\S+[\s.,!?;:]+/g);
+    return matches ? matches.length : 0;
   }
 
   getCompletedWords(text: string): string[] {
-    return text.trim().split(/\s+/).filter(word => word.length > 0);
+    const matches = text.match(/\S+[\s.,!?;:]+/g);
+    return matches || [];
   }
 
   getNewCompletedWords(text: string): string | null {
@@ -45,13 +49,47 @@ class AACPredictor {
     return newWords.join(' ');
   }
 
-  shouldStartSpeaking(completedWords: number, totalWords: number): boolean {
-    // Start speaking when 40% of words are completed
-    return completedWords >= Math.ceil(totalWords * 0.4);
+  shouldStartSpeaking(completedWords: string[], wordDurations: Map<string, number>, wpm: number, assumedSentenceLength: number): boolean {
+    if (completedWords.length < 2) return false;
+
+    // Calculate remaining typing time
+    const remainingWords = assumedSentenceLength - completedWords.length;
+    const timeToFinishTyping = remainingWords * 60 / wpm;
+
+    // Sum up the actual speech durations of completed words
+    let totalSpeechTime = 0;
+    for (const word of completedWords) {
+      const duration = wordDurations.get(word);
+      if (duration === undefined) {
+        console.warn('Missing duration for word:', word);
+        return false;
+      }
+      totalSpeechTime += duration;
+    }
+
+    const timeDifference = Math.abs(timeToFinishTyping - totalSpeechTime);
+    
+    console.log('Prediction stats:', {
+      completedWordsCount: completedWords.length,
+      remainingWords,
+      timeToFinishTyping,
+      totalSpeechTime,
+      timeDifference,
+    });
+    console.log(timeDifference)
+    return (timeDifference <= 4 || completedWords.length >= Math.ceil(assumedSentenceLength * 0.8));
   }
 
-  reset(): void {
-    this.lastSpokenIndex = -1;
+  recordWordCompletion() {
+    const now = Date.now();
+    this.wordTimestamps.push(now);
+    if (this.wordTimestamps.length > 3) {
+      this.wordTimestamps.shift();
+    }
+  }
+
+  setWordDuration(word: string, duration: number) {
+    this.audioCache.set(word.trim(), duration);
   }
 }
 
@@ -66,12 +104,12 @@ const TextToSpeech = () => {
   const [isPredicting, setIsPredicting] = useState(false);
   const [predictiveStarted, setPredictiveStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const startTimeRef = useRef<number | null>(null);
-  const predictor = useRef(new AACPredictor(wpm));
+  const predictor = useRef(new AACPredictor());
   const audioQueue = useRef<HTMLAudioElement[]>([]);
   const isPlaying = useRef(false);
   const [showMetrics, setShowMetrics] = useState(false);
   const metricsAnalyzer = useRef(new ConversationAnalyzer());
+  const wordDurations = useRef(new Map<string, number>());
 
   const voices = [
     { name: 'en-US-Standard-A', language: 'en-US' },
@@ -161,73 +199,116 @@ const TextToSpeech = () => {
     setText('');
     setIsPredicting(true);
     setPredictiveStarted(false);
-    predictor.current = new AACPredictor(wpm);
-    predictor.current.reset();
+    predictor.current = new AACPredictor();
+
     handleStop();
     metricsAnalyzer.current = new ConversationAnalyzer();
     console.log('Started predicting mode. Target words:', totalWords);
   };
+
+  const generateWordAudio = useCallback(async (word: string): Promise<number> => {
+    try {
+      const response = await fetch('/api/text-to-speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: word,
+          voice: selectedVoice,
+          pitch,
+          speakingRate: rate,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate speech');
+      }
+
+      const audioData = await response.blob();
+      const audio = new Audio(URL.createObjectURL(audioData));
+      
+      return new Promise((resolve) => {
+        audio.addEventListener('loadedmetadata', () => {
+          resolve(audio.duration);
+        });
+      });
+    } catch (err) {
+      console.error('Error generating audio for word:', word, err);
+      throw err;
+    }
+  }, [selectedVoice, pitch, rate]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const processNewWords = async (newWords: string[]) => {
+      if (!mounted) return;
+
+      for (const word of newWords) {
+        if (!wordDurations.current.has(word)) {
+          try {
+            const duration = await generateWordAudio(word);
+            if (mounted) {
+              wordDurations.current.set(word, duration);
+            }
+          } catch (err) {
+            console.error('Failed to generate audio for word:', word);
+          }
+        }
+      }
+
+      if (!mounted) return;
+
+      // Check if we should start speaking
+      if (!predictiveStarted) {
+        const currentWords = predictor.current.getCompletedWords(text);
+        const shouldStart = predictor.current.shouldStartSpeaking(currentWords, wordDurations.current, wpm, totalWords);
+        
+        if (shouldStart) {
+          console.log('Starting predictive speech');
+          setPredictiveStarted(true);
+          // queueForSpeaking(currentWords.join(''));
+        }
+      }
+    };
+
+    if (isPredicting) {
+      const currentWords = predictor.current.getCompletedWords(text);
+      processNewWords(currentWords);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [text, isPredicting, generateWordAudio]);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     setText(newText);
     
     if (!isPredicting) return;
-  
-    const isWordCompleted = newText.endsWith(' ');
-    const completedWords = AACPredictor.countCompletedWords(newText);
-    
-    console.log(`Completed words: ${completedWords}/${totalWords}`);
 
-    // Add this for metrics
-    const words = predictor.current.getCompletedWords(newText);
-    const lastWord = words[words.length - 1];
-    if (lastWord && isWordCompleted) {
-      metricsAnalyzer.current.recordWordTypingStart(lastWord);
-    }
+    const previousWords = predictor.current.getCompletedWords(text);
+    const currentWords = predictor.current.getCompletedWords(newText);
     
-    console.log(predictiveStarted)
-    // Check if we should start speaking
-    if (!predictiveStarted) {
-      const shouldSpeak = predictor.current.shouldStartSpeaking(completedWords, totalWords);
-      
-      if (shouldSpeak && isWordCompleted) {
-        console.log('Starting predictive speaking');
-        setPredictiveStarted(true);
-        
-        // Get and speak just the last word
-        const words = predictor.current.getCompletedWords(newText);
-        const currentWord = words[predictor.current.lastSpokenIndex + 1];
-        
-        if (currentWord) {
-          console.log('Speaking word:', currentWord);
-          // queueForSpeaking(currentWord);
-        }
-      }
-    } else if (isWordCompleted) {
-      // Speak only new completed words
-      const newWord = predictor.current.getNewCompletedWords(newText);
-      if (newWord) {
-        console.log('Speaking new word:', newWord);
-        queueForSpeaking(newWord);
+    if (currentWords.length > previousWords.length) {
+      predictor.current.recordWordCompletion();
+    }
+
+    if (predictiveStarted && currentWords.length > predictor.current.lastSpokenIndex + 1) {
+      const newWords = currentWords.slice(predictor.current.lastSpokenIndex + 1);
+      predictor.current.lastSpokenIndex = currentWords.length - 1;
+      if (newWords.length > 0) {
+        queueForSpeaking(newWords.join(''));
       }
     }
-  
-    if (completedWords >= totalWords) {
+
+    if (currentWords.length >= totalWords) {
       setIsPredicting(false);
+      setPredictiveStarted(false);
     }
   };
-
-  useEffect(() => {
-    if (isPredicting) {
-      const interval = setInterval(() => {
-        // Force a re-render to update metrics
-        setShowMetrics(show => show);
-      }, 1000);
-  
-      return () => clearInterval(interval);
-    }
-  }, [isPredicting]);
 
   if (error) {
     return (
