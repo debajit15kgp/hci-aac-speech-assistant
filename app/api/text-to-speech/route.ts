@@ -17,9 +17,9 @@ const client = new TextToSpeechClient({
 
 export async function POST(req: Request) {
   try {
-    console.log('API Route: Received request');
+    // console.log('API Route: Received request');
     const body = await req.json();
-    console.log('Request body:', body);
+    // console.log('Request body:', body);
 
     const { text, voice, pitch, speakingRate } = body;
 
@@ -32,12 +32,12 @@ export async function POST(req: Request) {
       );
     }
 
-    console.log('API Route: Sending request to Google Cloud', {
-      text,
-      voice,
-      pitch,
-      speakingRate,
-    });
+    // console.log('API Route: Sending request to Google Cloud', {
+    //   text,
+    //   voice,
+    //   pitch,
+    //   speakingRate,
+    // });
 
     const [response] = await client.synthesizeSpeech({
       input: { text },

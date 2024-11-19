@@ -12,13 +12,14 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "esModuleInterop": true,
-    "module": "esnext",
+    // "module": "esnext",
     "moduleResolution": "node",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    "baseUrl": ".",
+    "rootDir": "./",
+    "baseUrl": "./",
     "paths": {
       "@/*": [
         "./*"
@@ -28,7 +29,8 @@
       {
         "name": "next"
       }
-    ]
+    ],
+    "module": "esnext"
   },
   "include": [
     "next-env.d.ts",

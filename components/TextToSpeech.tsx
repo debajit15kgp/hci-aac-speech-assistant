@@ -9,6 +9,8 @@ import { Slider } from "@/components/ui/slider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Volume2, StopCircle, AlertTriangle, Play } from "lucide-react"
 import AutocompleteInput from './autocomplete';
+import { ConversationAnalyzer } from '@/lib/metrics/ConversationMetrics';
+import MetricsDashboard from '@/components/MetricsDashboard';
 
 class AACPredictor {
   constructor(wpm: number) {
@@ -68,6 +70,8 @@ const TextToSpeech = () => {
   const predictor = useRef(new AACPredictor(wpm));
   const audioQueue = useRef<HTMLAudioElement[]>([]);
   const isPlaying = useRef(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const metricsAnalyzer = useRef(new ConversationAnalyzer());
 
   const voices = [
     { name: 'en-US-Standard-A', language: 'en-US' },
@@ -107,6 +111,8 @@ const TextToSpeech = () => {
     if (!text?.trim()) return;
     console.log('Queuing for speaking:', text);
   
+    metricsAnalyzer.current.recordWordSpeechStart(text);
+
     try {
       const response = await fetch('/api/text-to-speech', {
         method: 'POST',
@@ -158,6 +164,7 @@ const TextToSpeech = () => {
     predictor.current = new AACPredictor(wpm);
     predictor.current.reset();
     handleStop();
+    metricsAnalyzer.current = new ConversationAnalyzer();
     console.log('Started predicting mode. Target words:', totalWords);
   };
 
@@ -171,7 +178,15 @@ const TextToSpeech = () => {
     const completedWords = AACPredictor.countCompletedWords(newText);
     
     console.log(`Completed words: ${completedWords}/${totalWords}`);
-  
+
+    // Add this for metrics
+    const words = predictor.current.getCompletedWords(newText);
+    const lastWord = words[words.length - 1];
+    if (lastWord && isWordCompleted) {
+      metricsAnalyzer.current.recordWordTypingStart(lastWord);
+    }
+    
+    console.log(predictiveStarted)
     // Check if we should start speaking
     if (!predictiveStarted) {
       const shouldSpeak = predictor.current.shouldStartSpeaking(completedWords, totalWords);
@@ -203,6 +218,17 @@ const TextToSpeech = () => {
     }
   };
 
+  useEffect(() => {
+    if (isPredicting) {
+      const interval = setInterval(() => {
+        // Force a re-render to update metrics
+        setShowMetrics(show => show);
+      }, 1000);
+  
+      return () => clearInterval(interval);
+    }
+  }, [isPredicting]);
+
   if (error) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
@@ -217,7 +243,7 @@ const TextToSpeech = () => {
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
-      <Card className="w-full min-w-[500px] max-w-4xl">
+      <Card className="w-full min-w-[400px] max-w-4xl">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -353,8 +379,28 @@ const TextToSpeech = () => {
               </div>
             )}
           </div>
+          <div className="flex justify-end mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowMetrics(!showMetrics)}
+            >
+              {showMetrics ? 'Hide Metrics' : 'Show Metrics'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
+      {showMetrics && (
+        <Card className="mt-4 w-full min-w-[500px] max-w-4xl">
+          <CardHeader>
+            <CardTitle>Performance Metrics</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <MetricsDashboard 
+              metrics={metricsAnalyzer.current.calculateMetrics()}
+            />
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };
