@@ -115,7 +115,7 @@ const TextToSpeech = () => {
       if (!synth.current) return;
       console.log('Adding to speech queue:', text);
       let utterance = currentUtterance.current;
-
+      metricsAnalyzer.current.recordWordSpeechStart(text[text.length-1]);
 
       if (!utterance) {
         utterance = new SpeechSynthesisUtterance();
@@ -128,8 +128,9 @@ const TextToSpeech = () => {
         currentUtterance.current = utterance;
       }
 
-      if (!synth.current.speaking) {
+      if (!synth.current.speaking && !isSpeaking) {
           utterance.text = text.join(' ');
+          setboundryWordIndex(text.length);
           const boundryChar = text.join(' ').length;
           utterance.addEventListener('boundary', evt => {
             if (evt.charIndex >= boundryChar - 1) {
@@ -141,8 +142,8 @@ const TextToSpeech = () => {
           synth.current.speak(utterance);
       } else if(text.length == totalWords) {
           // Update the current utterance with all words
-          //console.log("adding words: ", text.slice(boundryWordIndex));
-          utterance.text = text.slice(boundryWordIndex).join('');
+          console.log("adding words: ", text.slice(boundryWordIndex));
+          utterance.text = text.slice(boundryWordIndex).join(' ');
           synth.current.speak(utterance);
           setIsSpeaking(false);
       }
@@ -153,7 +154,7 @@ const TextToSpeech = () => {
       synth.current.cancel();
     }
     currentUtterance.current = null;
-    setIsSpeaking(false);
+    // setIsSpeaking(false);
   };
 
   const handleStartPredicting = () => {
@@ -198,6 +199,14 @@ const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
           console.log('Speaking new word in ongoing speech');
           queueForSpeaking(currentWords);
       }
+      const isWordCompleted = newText.endsWith(' ');
+      const words = predictor.current.getCompletedWords(newText);
+      const lastWord = words[words.length - 1];
+      if (lastWord && isWordCompleted) {
+        metricsAnalyzer.current.recordWordTypingStart(lastWord);
+      }
+      
+      console.log(predictiveStarted)
   }
 
   if (currentWords.length >= totalWords) {
@@ -205,6 +214,17 @@ const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setPredictiveStarted(false);
   }
 };
+
+useEffect(() => {
+  if (isPredicting) {
+    const interval = setInterval(() => {
+      // Force a re-render to update metrics
+      setShowMetrics(show => show);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }
+}, [isPredicting]);
 
   if (error) {
     return (
